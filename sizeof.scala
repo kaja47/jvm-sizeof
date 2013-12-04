@@ -33,9 +33,9 @@ object SizeOf {
     private val arraySumSize = mutable.Map[Class[_], Int]() withDefaultValue 0
     private val arrayLengths = mutable.Map[Class[_], mutable.ArrayBuilder.ofInt]()
     private val classes      = mutable.Map[Class[_], Int]() withDefaultValue 0 // counts
-    private val visited      = mutable.Set[Int]()
+    private val visited      = new java.util.IdentityHashMap[AnyRef, Unit]
 
-    private def isVisited(x: AnyRef) = visited(System.identityHashCode(x))
+    private def isVisited(x: AnyRef) = visited.containsKey(x)
 
     private def sizeOfClass(cl: Class[_]) =
       classSize getOrElseUpdate (cl, {
@@ -50,7 +50,7 @@ object SizeOf {
       val len = unsafe.arrayBaseOffset(cl) + unsafe.arrayIndexScale(cl) * x.length
       val size = (((len-1) / Word) + 1) * Word
 
-      visited += System.identityHashCode(x)
+      visited.put(x, ())
       classes(cl) = classes(cl) + 1
       arraySumSize(cl) += size
       (arrayLengths getOrElseUpdate (cl, new mutable.ArrayBuilder.ofInt)) += x.length
@@ -61,7 +61,7 @@ object SizeOf {
     private def sizeOfObj(x: AnyRef): Int = {
       val cl = x.getClass
 
-      visited += System.identityHashCode(x)
+      visited.put(x, ())
       classes(cl) = classes(cl) + 1
 
       sizeOfClass(cl)
