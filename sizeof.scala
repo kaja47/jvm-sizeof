@@ -29,10 +29,11 @@ object SizeOf {
   def sizeOfStats(x: AnyRef) = new Run().sizeOfStats(x)
 
   class Run {
-    private val classSize    = collection.mutable.Map[Class[_], Int]()
-    private val arraySumSize = collection.mutable.Map[Class[_], Int]() withDefaultValue 0
-    private val classes      = collection.mutable.Map[Class[_], Int]() withDefaultValue 0 // counts
-    private val visited      = collection.mutable.Set[Int]()
+    private val classSize    = mutable.Map[Class[_], Int]()
+    private val arraySumSize = mutable.Map[Class[_], Int]() withDefaultValue 0
+    private val arrayLengths = mutable.Map[Class[_], mutable.ArrayBuilder.ofInt]()
+    private val classes      = mutable.Map[Class[_], Int]() withDefaultValue 0 // counts
+    private val visited      = mutable.Set[Int]()
 
     private def isVisited(x: AnyRef) = visited(System.identityHashCode(x))
 
@@ -51,7 +52,8 @@ object SizeOf {
 
       visited += System.identityHashCode(x)
       classes(cl) = classes(cl) + 1
-      arraySumSize(cl) = arraySumSize(cl) + size
+      arraySumSize(cl) += size
+      (arrayLengths getOrElseUpdate (cl, new mutable.ArrayBuilder.ofInt)) += x.length
 
       size
     }
@@ -65,25 +67,38 @@ object SizeOf {
       sizeOfClass(cl)
     }
 
-    def sizeOfRecursive(x: AnyRef): Int = x match {
-      case null => 0
+    def sizeOfRecursive(x: AnyRef): Int =
+      sizeOfTailRecursive(Array(x), 0)
+
+    private def _sizeOfTailRecursive(x: AnyRef): (Seq[AnyRef], Int) = x match {
+      case null =>
+        (Seq(), 0)
       case arr: Array[AnyRef] =>
-        sizeOfArray(arr) + (arr filterNot isVisited map sizeOfRecursive sum)
+        (arr filterNot isVisited, sizeOfArray(arr))
       case arr: Array[_] =>
-        sizeOfArray(arr)
+        (Seq(), sizeOfArray(arr))
       case obj =>
         val fs = getAllFields(obj.getClass) filterNot (_.getType.isPrimitive)
-        sizeOfObj(obj) + (fs map { f => acc(f) get obj } filterNot isVisited map sizeOfRecursive sum)
+        (fs map { f => acc(f) get obj } filterNot isVisited, sizeOfObj(obj))
+    }
+
+    @annotation.tailrec
+    final def sizeOfTailRecursive(xs: Array[AnyRef], size: Int): Int = {
+      if (xs.isEmpty) {
+        size
+      } else {
+        val rs = xs map _sizeOfTailRecursive
+        val newSize = rs map (_._2) sum ;
+        val children = rs flatMap (_._1)
+        sizeOfTailRecursive(children, newSize + size)
+      }
     }
 
     def sizeOfStats(x: AnyRef): Unit = {
       val size = sizeOfRecursive(x)
+      def freq(xs: Array[Int]): Seq[(Int, Int)] =
+        xs.groupBy(identity).mapValues(_.size).toSeq.sortBy(_._1)
 
-      println()
-      println("\ntotal "+size+"\n")
-      println()
-
-      println()
       classSize foreach { case (cl, size) =>
         println(cl.getName)
         getAllFields(cl) sortBy unsafe.objectFieldOffset foreach { f =>
@@ -97,10 +112,11 @@ object SizeOf {
       val cc = classes map { case (cl, count) =>
         val one   = classSize get cl                 getOrElse (arraySumSize(cl) / count)
         val total = classSize get cl map (_ * count) getOrElse (arraySumSize(cl))
-        (cl, count, one, total)
+        (cl, count, one, total, arrayLengths get cl)
       }
-      cc foreach { case (cl, count, one, total) =>
-        printf("%7d %7dB %10dB %s\n", count, one, total, cl.getName)
+      cc foreach { case (cl, count, one, total, arrSize) =>
+        val arrStat = arrSize map (as => freq(as.result).map { case (s, c) => s+" - "+c+"x" }.mkString("sizes: (", ", ", ")")) getOrElse ""
+        printf("%7d %7dB %10dB %s %s\n", count, one, total, cl.getName, arrStat)
       }
 
       val count   =  cc map (_._2) sum
@@ -108,7 +124,19 @@ object SizeOf {
       val totSize =  cc map (_._4) sum
 
       println("----------------------------")
-      printf("%7d %7dB %10dB\n", count, avgSize, totSize)
+      printf("%7d %7s  %10dB\n", count, "", totSize)
+
+      println()
+      println("total size: "+size+" bytes")
+      val collSize = x match {
+        case x: collection.GenTraversableOnce[_] => x.size
+        case x: java.util.Collection[_] => x.size
+        case _ => 0
+      }
+      if (collSize > 0)
+        println("per element: "+(size.toDouble / collSize)+" bytes")
+
+      println()
     }
   }
 }
@@ -118,7 +146,7 @@ object SizeOf {
 //val x = Map(tupleSeq:_*v)
 //val x = collection.immutable.SortedSet(1 to 200: _*)
 //val x = List(1 to 200: _*)
-val x = immutable.HashSet(1 to 10000: _*)
+//val x = immutable.HashSet(1 to 10000: _*)
 //val x = new java.util.ArrayList[Int]; for (i <- 0 to 100000) x.add(i)
 
-SizeOf.sizeOfStats(x)
+//SizeOf.sizeOfStats(x)
